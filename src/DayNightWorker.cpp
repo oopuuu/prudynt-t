@@ -616,6 +616,8 @@ void *thread_entry(void *arg) {
         }
       }
       
+      LOG_INFO("DayNight: Waiting 5s for PWM driver...");
+      std::this_thread::sleep_for(std::chrono::seconds(5)); //waiting for ircut hardware init
       apply_mode(initial);
       current = initial;
       simple_state.is_night = (current == DayNightAlgo::Mode::Night);
