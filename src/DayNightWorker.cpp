@@ -616,42 +616,51 @@ void *thread_entry(void *arg) {
 
       DayNightAlgo::Mode initial = DayNightAlgo::Mode::Day;
 
-      // If extremely dark environment is detected
+      // =========================================================
+      // [CORE FIX] Symmetric Mechanical Reset Sequence
+      // Whether starting in Day or Night, we must perform a "Toggle Reset"
+      // to overcome static friction and power instability at boot.
+      // =========================================================
+
       if (startup_total_gain > threshold) {
+          // --- CASE 1: DARK ENVIRONMENT (Target: NIGHT) ---
           simple_state.is_night = true;
           initial = DayNightAlgo::Mode::Night;
 
           if (daynight_should_log(Logger::INFO)) {
-             LOG_INFO("DayNight: Dark boot detected. Performing IR-CUT mechanical reset sequence...");
+             LOG_INFO("DayNight: Dark boot. Resetting mechanism (Day -> Wait -> Night)...");
           }
 
-          // =========================================================
-          // [CORE FIX] Mechanical Reset Sequence (Toggle Reset)
-          // Since a single command might fail due to power instability or 
-          // static friction on boot, we perform a "Day -> Wait -> Night" sequence.
-          //
-          // 1. Force switch to DAY mode first.
-          //    (Ensures filter position resets and pre-charges the solenoid)
-          // =========================================================
+          // 1. Kick to Opposite (Day) to reset position
           apply_mode(DayNightAlgo::Mode::Day);
-          
-          // Wait 2 seconds for the mechanical structure to settle
           std::this_thread::sleep_for(std::chrono::seconds(2));
 
-          // =========================================================
-          // 2. Force switch to NIGHT mode.
-          //    (This is the actual intended action)
-          // =========================================================
-          if (daynight_should_log(Logger::INFO)) {
-             LOG_INFO("DayNight: Forcing switch to NIGHT mode now...");
-          }
+          // 2. Set to Target (Night)
           apply_mode(DayNightAlgo::Mode::Night);
-          
-          // Allow a brief stabilization period
           std::this_thread::sleep_for(std::chrono::seconds(1));
+
       } else {
-          // If conditions are bright, apply DAY mode normally
+          // --- CASE 2: BRIGHT ENVIRONMENT (Target: DAY) ---
+          // The filter might be stuck in "Night" position (causing purple image).
+          // We force a reset sequence here too.
+          
+          simple_state.is_night = false;
+          initial = DayNightAlgo::Mode::Day;
+
+          if (daynight_should_log(Logger::INFO)) {
+             LOG_INFO("DayNight: Bright boot. Resetting mechanism (Night -> Wait -> Day)...");
+          }
+
+          // 1. Kick to Opposite (Night) first
+          // This ensures the solenoid moves and breaks static friction.
+          // (Note: IR LED might flash briefly, this is expected)
+          apply_mode(DayNightAlgo::Mode::Night);
+          std::this_thread::sleep_for(std::chrono::seconds(2));
+
+          // 2. Set to Target (Day)
+          // Now the filter will reliably move to cover the sensor.
           apply_mode(DayNightAlgo::Mode::Day);
+          std::this_thread::sleep_for(std::chrono::seconds(1));
       }
 
       // =========================================================
