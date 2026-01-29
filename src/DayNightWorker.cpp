@@ -599,34 +599,70 @@ void *thread_entry(void *arg) {
                                                       : "HOLD"));
     }
 
-    // Apply initial mode if not set - infer from current sensor readings
+// Apply initial mode if not set
     if (!initial_mode_applied) {
-      DayNightAlgo::Mode initial = DayNightAlgo::Mode::Day;
+      // =========================================================
+      // [FIX] Boot-time Gain Detection
+      // =========================================================
+      int startup_total_gain = -1;
+      hal::isp::get_total_gain(startup_total_gain);
       
-      // Infer initial mode from sensor readings to avoid black screen on boot in dark conditions
-      if (total_gain >= 0) {
-        // Use total_gain if available
-        if (total_gain > simple_params.total_gain_night_threshold) {
-          initial = DayNightAlgo::Mode::Night;
-        }
-      } else if (ev >= 0) {
-        // Fallback to EV for platforms without total_gain
-        if (ev > simple_params.ev_night_threshold) {
-          initial = DayNightAlgo::Mode::Night;
-        }
+      int threshold = simple_params.total_gain_night_threshold;
+      if (threshold <= 0) threshold = 14400;
+
+      if (daynight_should_log(Logger::INFO)) {
+          LOG_INFO("DayNight: Boot check. Gain=" << startup_total_gain << " Threshold=" << threshold);
       }
-      
-      LOG_INFO("DayNight: Waiting 5s for PWM driver...");
-      std::this_thread::sleep_for(std::chrono::seconds(5)); //waiting for ircut hardware init
-      apply_mode(initial);
+
+      DayNightAlgo::Mode initial = DayNightAlgo::Mode::Day;
+
+      // If extremely dark environment is detected
+      if (startup_total_gain > threshold) {
+          simple_state.is_night = true;
+          initial = DayNightAlgo::Mode::Night;
+
+          if (daynight_should_log(Logger::INFO)) {
+             LOG_INFO("DayNight: Dark boot detected. Performing IR-CUT mechanical reset sequence...");
+          }
+
+          // =========================================================
+          // [CORE FIX] Mechanical Reset Sequence (Toggle Reset)
+          // Since a single command might fail due to power instability or 
+          // static friction on boot, we perform a "Day -> Wait -> Night" sequence.
+          //
+          // 1. Force switch to DAY mode first.
+          //    (Ensures filter position resets and pre-charges the solenoid)
+          // =========================================================
+          apply_mode(DayNightAlgo::Mode::Day);
+          
+          // Wait 2 seconds for the mechanical structure to settle
+          std::this_thread::sleep_for(std::chrono::seconds(2));
+
+          // =========================================================
+          // 2. Force switch to NIGHT mode.
+          //    (This is the actual intended action)
+          // =========================================================
+          if (daynight_should_log(Logger::INFO)) {
+             LOG_INFO("DayNight: Forcing switch to NIGHT mode now...");
+          }
+          apply_mode(DayNightAlgo::Mode::Night);
+          
+          // Allow a brief stabilization period
+          std::this_thread::sleep_for(std::chrono::seconds(1));
+      } else {
+          // If conditions are bright, apply DAY mode normally
+          apply_mode(DayNightAlgo::Mode::Day);
+      }
+
+      // =========================================================
+
       current = initial;
-      simple_state.is_night = (current == DayNightAlgo::Mode::Night);
       cfg->daynight.live_mode.store(current == DayNightAlgo::Mode::Day ? "day" : "night",
                                     std::memory_order_relaxed);
       initial_mode_applied = true;
+      
       if (daynight_should_log(Logger::INFO)) {
-        LOG_INFO("DayNight: applied initial mode " << (current == DayNightAlgo::Mode::Day ? "day" : "night")
-                 << " (total_gain=" << total_gain << ", ev=" << ev << ")");
+        LOG_INFO("DayNight: Initialization complete. Mode: " << (current == DayNightAlgo::Mode::Day ? "day" : "night"));
       }
     }
 
