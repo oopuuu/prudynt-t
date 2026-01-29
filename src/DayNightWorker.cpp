@@ -223,50 +223,45 @@ static void apply_mode(DayNightAlgo::Mode m) {
   const char *script_cfg = cfg->get<const char *>("daynight.script_path");
   const char *script = (script_cfg && std::strlen(script_cfg) > 0) ? script_cfg : "/sbin/daynight";
 
+  std::string cmd;
+  const char *mode_str = "";
+
   if (m == DayNightAlgo::Mode::Day) {
-    // Switch to day bin if configured and enabled
+    // Switch to day bin if configured
     if (cfg->daynight.controls.binswitch) {
       const char *day_bin = cfg->get<const char *>("daynight.day_bin_path");
       if (day_bin && day_bin[0] != '\0') {
-        int bin_ret = hal::isp::switch_bin(day_bin);
-        if (bin_ret != 0 && daynight_should_log(Logger::WARN)) {
-          LOG_WARN("Failed to switch to day bin '" << day_bin << "': " << bin_ret);
-        } else if (bin_ret == 0 && daynight_should_log(Logger::INFO)) {
-          LOG_INFO("Switched to day IQ bin: " << day_bin);
-        }
+         hal::isp::switch_bin(day_bin);
       }
     }
-
-    int ret = hal::isp::set_running_mode(hal::isp::RunningMode::Day);
-    if (ret != 0) {
-      if (daynight_should_log(Logger::WARN)) {
-        LOG_WARN("SetISPRunningMode(DAY) failed: " << ret);
-      }
-    }
-    std::string cmd = std::string(script) + " day";
-    (void)std::system(cmd.c_str());
+    hal::isp::set_running_mode(hal::isp::RunningMode::Day);
+    cmd = std::string(script) + " day";
+    mode_str = "DAY";
   } else if (m == DayNightAlgo::Mode::Night) {
-    // Switch to night bin if configured and enabled
+    // Switch to night bin if configured
     if (cfg->daynight.controls.binswitch) {
       const char *night_bin = cfg->get<const char *>("daynight.night_bin_path");
       if (night_bin && night_bin[0] != '\0') {
-        int bin_ret = hal::isp::switch_bin(night_bin);
-        if (bin_ret != 0 && daynight_should_log(Logger::WARN)) {
-          LOG_WARN("Failed to switch to night bin '" << night_bin << "': " << bin_ret);
-        } else if (bin_ret == 0 && daynight_should_log(Logger::INFO)) {
-          LOG_INFO("Switched to night IQ bin: " << night_bin);
-        }
+         hal::isp::switch_bin(night_bin);
       }
     }
+    hal::isp::set_running_mode(hal::isp::RunningMode::Night);
+    cmd = std::string(script) + " night";
+    mode_str = "NIGHT";
+  }
 
-    int ret = hal::isp::set_running_mode(hal::isp::RunningMode::Night);
-    if (ret != 0) {
-      if (daynight_should_log(Logger::WARN)) {
-        LOG_WARN("SetISPRunningMode(NIGHT) failed: " << ret);
+  // =========================================================
+  // [DEBUG FIX] Verbose Execution
+  // Capture the output of the script to see why it fails at boot.
+  // We append " 2>&1 | logger -t DayNightScript" to pipe output to syslog
+  // =========================================================
+  if (!cmd.empty()) {
+      std::string verbose_cmd = cmd + " 2>&1 | logger -t DayNightScript";
+      int ret = std::system(verbose_cmd.c_str());
+      
+      if (daynight_should_log(Logger::INFO)) {
+          LOG_INFO("DayNight: Executed '" << cmd << "' -> Return Code: " << ret);
       }
-    }
-    std::string cmd = std::string(script) + " night";
-    (void)std::system(cmd.c_str());
   }
 }
 
@@ -628,16 +623,27 @@ void *thread_entry(void *arg) {
           initial = DayNightAlgo::Mode::Night;
 
           if (daynight_should_log(Logger::INFO)) {
-             LOG_INFO("DayNight: Dark boot. Resetting mechanism (Day -> Wait -> Night)...");
+             LOG_INFO("DayNight: Dark boot. Executing 'Double Tap' sequence...");
           }
 
-          // 1. Kick to Opposite (Day) to reset position
+          // 1. Kick to Day (Reset Position)
           apply_mode(DayNightAlgo::Mode::Day);
           std::this_thread::sleep_for(std::chrono::seconds(2));
 
-          // 2. Set to Target (Night)
+          // 2. First attempt to Night (Initialize GPIOs/PWM)
+          if (daynight_should_log(Logger::INFO)) {
+             LOG_INFO("DayNight: Attempt 1 (Init)...");
+          }
           apply_mode(DayNightAlgo::Mode::Night);
-          std::this_thread::sleep_for(std::chrono::seconds(1));
+          
+          std::this_thread::sleep_for(std::chrono::seconds(2));
+
+          // 3. Second attempt to Night (The "Double Tap")
+         
+          if (daynight_should_log(Logger::INFO)) {
+             LOG_INFO("DayNight: Attempt 2 (Force Latch)...");
+          }
+          apply_mode(DayNightAlgo::Mode::Night);
 
       } else {
           // --- CASE 2: BRIGHT ENVIRONMENT (Target: DAY) ---
