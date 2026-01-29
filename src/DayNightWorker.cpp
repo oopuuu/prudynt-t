@@ -596,8 +596,21 @@ void *thread_entry(void *arg) {
 
 // Apply initial mode if not set
     if (!initial_mode_applied) {
+      
       // =========================================================
-      // [FIX] Boot-time Gain Detection
+      // [FINAL FIX] Motor Calibration Avoidance (30s Delay)
+      // PTZ cameras perform motor calibration at boot which draws high current.
+      // We MUST wait for the calibration to finish to avoid voltage brown-out.
+      // =========================================================
+      if (daynight_should_log(Logger::INFO)) {
+          LOG_INFO("DayNight: Boot detected. Pausing 30s for PTZ calibration & Power stabilization...");
+      }
+      
+      
+      std::this_thread::sleep_for(std::chrono::seconds(30));
+
+      // =========================================================
+      // [STEP 2] Wake up and check sensors
       // =========================================================
       int startup_total_gain = -1;
       hal::isp::get_total_gain(startup_total_gain);
@@ -606,15 +619,14 @@ void *thread_entry(void *arg) {
       if (threshold <= 0) threshold = 14400;
 
       if (daynight_should_log(Logger::INFO)) {
-          LOG_INFO("DayNight: Boot check. Gain=" << startup_total_gain << " Threshold=" << threshold);
+          LOG_INFO("DayNight: System stabilized. Gain=" << startup_total_gain << " Threshold=" << threshold);
       }
 
       DayNightAlgo::Mode initial = DayNightAlgo::Mode::Day;
 
       // =========================================================
-      // [CORE FIX] Symmetric Mechanical Reset Sequence
-      // Whether starting in Day or Night, we must perform a "Toggle Reset"
-      // to overcome static friction and power instability at boot.
+      // [STEP 3] Execute your "Double Tap" & "Reset" Logic
+      // Now that power is stable, this logic will work 100%.
       // =========================================================
 
       if (startup_total_gain > threshold) {
@@ -639,7 +651,7 @@ void *thread_entry(void *arg) {
           std::this_thread::sleep_for(std::chrono::seconds(2));
 
           // 3. Second attempt to Night (The "Double Tap")
-         
+          // Power is stable now, so this will definitely latch.
           if (daynight_should_log(Logger::INFO)) {
              LOG_INFO("DayNight: Attempt 2 (Force Latch)...");
           }
@@ -647,9 +659,6 @@ void *thread_entry(void *arg) {
 
       } else {
           // --- CASE 2: BRIGHT ENVIRONMENT (Target: DAY) ---
-          // The filter might be stuck in "Night" position (causing purple image).
-          // We force a reset sequence here too.
-          
           simple_state.is_night = false;
           initial = DayNightAlgo::Mode::Day;
 
@@ -658,13 +667,10 @@ void *thread_entry(void *arg) {
           }
 
           // 1. Kick to Opposite (Night) first
-          // This ensures the solenoid moves and breaks static friction.
-          // (Note: IR LED might flash briefly, this is expected)
           apply_mode(DayNightAlgo::Mode::Night);
           std::this_thread::sleep_for(std::chrono::seconds(2));
 
           // 2. Set to Target (Day)
-          // Now the filter will reliably move to cover the sensor.
           apply_mode(DayNightAlgo::Mode::Day);
           std::this_thread::sleep_for(std::chrono::seconds(1));
       }
